@@ -143,6 +143,9 @@ class VoicevoxClient:
             return int(styles[0]["id"])
         raise RuntimeError(f"Speaker not found: {speaker_name}")
 
+    def get_speakers(self) -> List[Dict[str, Any]]:
+        return self._json_request("GET", "/speakers", {}, None)
+
     def synthesize(self, text: str, speaker_id: int) -> bytes:
         query = self._json_request(
             "POST", "/audio_query", {"text": text, "speaker": speaker_id}, None
@@ -246,9 +249,47 @@ class BoxLogic:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.client = VoicevoxClient(cfg.voicevox_url)
-        self.speaker_id = self.client.resolve_speaker_id(cfg.speaker_name)
         self.logger = logging.getLogger("vv_box")
         self.player_cmd: Optional[List[str]] = None
+        self._speaker_id_cache: Dict[str, int] = {}
+
+    def resolve_speaker_id(self, speaker: Optional[Any]) -> int:
+        if speaker is None or str(speaker).strip() == "":
+            speaker = self.cfg.speaker_name
+        if isinstance(speaker, int):
+            return speaker
+        speaker_str = str(speaker).strip()
+        if speaker_str.isdigit():
+            return int(speaker_str)
+        cached = self._speaker_id_cache.get(speaker_str)
+        if cached is not None:
+            return cached
+        resolved = self.client.resolve_speaker_id(speaker_str)
+        self._speaker_id_cache[speaker_str] = resolved
+        return resolved
+
+    def health(self) -> Dict[str, Any]:
+        try:
+            speakers = self.client.get_speakers()
+            speaker_id = self.resolve_speaker_id(self.cfg.speaker_name)
+            return {
+                "status": "ok",
+                "voicevox": {
+                    "reachable": True,
+                    "speakers_count": len(speakers),
+                },
+                "default_speaker": {
+                    "name": self.cfg.speaker_name,
+                    "id": speaker_id,
+                },
+            }
+        except Exception as exc:
+            return {
+                "status": "degraded",
+                "voicevox": {"reachable": False},
+                "default_speaker": {"name": self.cfg.speaker_name, "id": None},
+                "error": str(exc),
+            }
 
     def _make_reply(self, text: str, mode: str) -> Tuple[str, Dict[str, int], str]:
         llm_ms = 0
@@ -271,10 +312,17 @@ class BoxLogic:
         fallback = normalize_text(FALLBACK_REPLY, self.cfg.min_chars, self.cfg.max_chars)
         return (fallback or FALLBACK_REPLY, {"llm_ms": llm_ms}, "fallback")
 
-    def process(self, text: str, mode: str = "llm", dry_run: bool = False) -> Dict[str, Any]:
+    def process(
+        self,
+        text: str,
+        mode: str = "llm",
+        dry_run: bool = False,
+        speaker: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         request_id = hashlib.md5(f"{time.time()}:{text}".encode("utf-8")).hexdigest()[:10]
         t0 = time.perf_counter()
         with ProcessLock(self.cfg.lock_path):
+            speaker_id = self.resolve_speaker_id(speaker)
             reply_text, latency, reply_source = self._make_reply(text, mode)
             tts_ms = 0
             error = None
@@ -295,7 +343,7 @@ class BoxLogic:
                             try:
                                 for segment in segments:
                                     synth_queue.put(
-                                        self.client.synthesize(segment, self.speaker_id)
+                                        self.client.synthesize(segment, speaker_id)
                                     )
                             finally:
                                 synth_queue.put(None)
@@ -310,7 +358,7 @@ class BoxLogic:
                             play_wav_bytes(self.player_cmd, wav)
                         worker.join(timeout=1)
                     else:
-                        wav = self.client.synthesize(reply_text, self.speaker_id)
+                        wav = self.client.synthesize(reply_text, speaker_id)
                         play_wav_bytes(self.player_cmd, wav)
                     tts_ms = int((time.perf_counter() - t1) * 1000)
                     played = True
@@ -327,8 +375,11 @@ class BoxLogic:
                     "llm_ms": latency.get("llm_ms", 0),
                     "tts_ms": tts_ms,
                 },
-                "speaker_id": self.speaker_id,
+                "speaker_id": speaker_id,
                 "reply_source": reply_source,
+                "input_chars": len(text),
+                "output_chars": len(reply_text),
+                "mode": mode,
                 "error": error,
             }
             self.logger.info(json.dumps(result, ensure_ascii=False))
@@ -358,6 +409,7 @@ class APIService:
                     text=str(payload.get("text", "")),
                     mode=str(payload.get("mode", "llm")),
                     dry_run=bool(payload.get("dry_run", False)),
+                    speaker=payload.get("speaker"),
                 )
             except Exception as exc:
                 task.result = {"error": str(exc)}
@@ -383,7 +435,9 @@ def make_handler(service: APIService):
 
         def do_GET(self):
             if self.path == "/health":
-                self._send(200, {"status": "ok"})
+                health = service.logic.health()
+                code = 200 if health.get("status") == "ok" else 503
+                self._send(code, health)
                 return
             self._send(404, {"error": "not found"})
 

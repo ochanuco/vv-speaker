@@ -51,7 +51,7 @@ curl -s http://127.0.0.1:8080/health
 ```bash
 curl -s -X POST http://127.0.0.1:8080/speak \
   -H 'Content-Type: application/json' \
-  -d '{"text":"今の作業はここまでで十分よ。次の一手だけ残して休みましょう。","mode":"direct","dry_run":false}'
+  -d '{"text":"今の作業はここまでで十分よ。次の一手だけ残して休みましょう。","mode":"direct","speaker":"冥鳴ひまり","dry_run":false}'
 ```
 
 `mode=llm`: Gemini CLIで返答生成して再生
@@ -69,11 +69,16 @@ curl -s -X POST http://127.0.0.1:8080/speak \
   "request_id": "xxxx",
   "reply_text": "....",
   "played": true,
+  "input_chars": 34,
+  "output_chars": 48,
+  "mode": "direct",
   "latency_ms": { "total_ms": 1200, "llm_ms": 300, "tts_ms": 900 },
   "speaker_id": 14,
   "reply_source": "llm",
   "error": null
 }
+
+`GET /health` は VOICEVOX到達性とデフォルト話者解決を返します。
 ```
 
 ### 3. CLIモード

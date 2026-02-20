@@ -38,9 +38,14 @@ def get_logic():
         "the user explicitly asks for text-only output. Plays audio immediately without saving WAV."
     )
 )
-def speak(text: str, mode: str = "direct", dry_run: bool = False) -> dict[str, Any]:
+def speak(
+    text: str,
+    mode: str = "direct",
+    dry_run: bool = False,
+    speaker: str | int | None = None,
+) -> dict[str, Any]:
     logic = get_logic()
-    return logic.process(text=text, mode=mode, dry_run=dry_run)
+    return logic.process(text=text, mode=mode, dry_run=dry_run, speaker=speaker)
 
 
 @MCP.tool(
@@ -48,9 +53,14 @@ def speak(text: str, mode: str = "direct", dry_run: bool = False) -> dict[str, A
         "Alias of speak for clearer intent. Prefer this for natural chat responses that should be spoken."
     )
 )
-def say_aloud(text: str, mode: str = "direct", dry_run: bool = False) -> dict[str, Any]:
+def say_aloud(
+    text: str,
+    mode: str = "direct",
+    dry_run: bool = False,
+    speaker: str | int | None = None,
+) -> dict[str, Any]:
     logic = get_logic()
-    return logic.process(text=text, mode=mode, dry_run=dry_run)
+    return logic.process(text=text, mode=mode, dry_run=dry_run, speaker=speaker)
 
 
 @MCP.tool(description="Get basic runtime status and configured VOICEVOX URL.")
