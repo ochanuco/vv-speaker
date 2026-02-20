@@ -1,6 +1,6 @@
 # vv-speaker
 
-WSL側で `Codex -> VOICEVOX` をつなぎ、**WAV保存せず即再生**するプロジェクトです。
+`Codex -> VOICEVOX` をつなぎ、擬似的なストリーム再生で発話を実現するプロジェクトです。
 
 ## 前提
 
