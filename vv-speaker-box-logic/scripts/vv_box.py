@@ -8,17 +8,18 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 FALLBACK_REPLY = (
@@ -58,26 +59,33 @@ def load_dotenv() -> None:
 class Config:
     voicevox_url: str
     speaker_name: str
-    output_dir: Path
     llm_timeout_sec: int
     min_chars: int
     max_chars: int
     queue_max: int
     lock_path: Path
     llm_command: str
+    player_command: str
+    stream_playback: bool
 
     @staticmethod
     def from_env() -> "Config":
+        def as_bool(value: str, default: bool = False) -> bool:
+            if value is None:
+                return default
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+
         return Config(
             voicevox_url=os.getenv("VOICEVOX_URL", "http://127.0.0.1:50021"),
             speaker_name=os.getenv("SPEAKER_NAME", "冥鳴ひまり"),
-            output_dir=Path(os.getenv("OUTPUT_DIR", "/mnt/c/voicebox/output")),
             llm_timeout_sec=int(os.getenv("LLM_TIMEOUT_SEC", "15")),
             min_chars=int(os.getenv("MIN_CHARS", "80")),
             max_chars=int(os.getenv("MAX_CHARS", "160")),
             queue_max=int(os.getenv("QUEUE_MAX", "10")),
             lock_path=Path(os.getenv("LOCK_PATH", "/tmp/vv-speaker.lock")),
             llm_command=os.getenv("LLM_COMMAND", "gemini -p"),
+            player_command=os.getenv("PLAYER_COMMAND", ""),
+            stream_playback=as_bool(os.getenv("STREAM_PLAYBACK", "true"), default=True),
         )
 
 
@@ -190,13 +198,37 @@ def run_llm(user_text: str, cfg: Config) -> str:
     return out
 
 
-def save_wav_bytes(output_dir: Path, text: str, wav_data: bytes) -> str:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
-    path = output_dir / f"{stamp}_{digest}.wav"
-    path.write_bytes(wav_data)
-    return str(path)
+def split_sentences(text: str) -> List[str]:
+    normalized = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
+    if not normalized:
+        return []
+    parts = [p.strip() for p in re.split(r"(?<=[。！？!?])", normalized) if p.strip()]
+    return parts or [normalized]
+
+
+def detect_player_command(user_command: str) -> List[str]:
+    if user_command.strip():
+        return shlex.split(user_command)
+    if shutil.which("pw-play"):
+        return ["pw-play"]
+    if shutil.which("paplay"):
+        return ["paplay"]
+    if shutil.which("aplay"):
+        return ["aplay", "-q"]
+    raise RuntimeError("No audio player found. Set PLAYER_COMMAND or install pw-play/paplay/aplay.")
+
+
+def play_wav_bytes(player_cmd: List[str], wav_data: bytes) -> None:
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fp:
+        fp.write(wav_data)
+        temp_path = fp.name
+    try:
+        subprocess.run(player_cmd + [temp_path], check=True)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 class BoxLogic:
@@ -205,6 +237,7 @@ class BoxLogic:
         self.client = VoicevoxClient(cfg.voicevox_url)
         self.speaker_id = self.client.resolve_speaker_id(cfg.speaker_name)
         self.logger = logging.getLogger("vv_box")
+        self.player_cmd: Optional[List[str]] = None
 
     def _make_reply(self, text: str, mode: str) -> Tuple[str, Dict[str, int], str]:
         llm_ms = 0
@@ -232,15 +265,44 @@ class BoxLogic:
         t0 = time.perf_counter()
         with ProcessLock(self.cfg.lock_path):
             reply_text, latency, reply_source = self._make_reply(text, mode)
-            wav_path = None
             tts_ms = 0
             error = None
+            played = False
             if not dry_run:
                 try:
+                    if self.player_cmd is None:
+                        self.player_cmd = detect_player_command(self.cfg.player_command)
                     t1 = time.perf_counter()
-                    wav = self.client.synthesize(reply_text, self.speaker_id)
+                    if self.cfg.stream_playback:
+                        segments = split_sentences(reply_text)
+                        if not segments:
+                            segments = [reply_text]
+
+                        synth_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=2)
+
+                        def synth_worker() -> None:
+                            try:
+                                for segment in segments:
+                                    synth_queue.put(
+                                        self.client.synthesize(segment, self.speaker_id)
+                                    )
+                            finally:
+                                synth_queue.put(None)
+
+                        worker = threading.Thread(target=synth_worker, daemon=True)
+                        worker.start()
+
+                        while True:
+                            wav = synth_queue.get()
+                            if wav is None:
+                                break
+                            play_wav_bytes(self.player_cmd, wav)
+                        worker.join(timeout=1)
+                    else:
+                        wav = self.client.synthesize(reply_text, self.speaker_id)
+                        play_wav_bytes(self.player_cmd, wav)
                     tts_ms = int((time.perf_counter() - t1) * 1000)
-                    wav_path = save_wav_bytes(self.cfg.output_dir, reply_text, wav)
+                    played = True
                 except Exception as exc:
                     error = str(exc)
 
@@ -248,7 +310,7 @@ class BoxLogic:
             result = {
                 "request_id": request_id,
                 "reply_text": reply_text,
-                "wav_path": wav_path,
+                "played": played,
                 "latency_ms": {
                     "total_ms": total_ms,
                     "llm_ms": latency.get("llm_ms", 0),
