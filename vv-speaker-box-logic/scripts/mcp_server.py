@@ -43,9 +43,12 @@ def speak(
     mode: str = "direct",
     dry_run: bool = False,
     speaker: str | int | None = None,
+    preset: str = "himari",
 ) -> dict[str, Any]:
     logic = get_logic()
-    return logic.process(text=text, mode=mode, dry_run=dry_run, speaker=speaker)
+    return logic.process(
+        text=text, mode=mode, dry_run=dry_run, speaker=speaker, preset=preset
+    )
 
 
 @MCP.tool(
@@ -58,9 +61,17 @@ def say_aloud(
     mode: str = "direct",
     dry_run: bool = False,
     speaker: str | int | None = None,
+    preset: str = "himari",
 ) -> dict[str, Any]:
     logic = get_logic()
-    return logic.process(text=text, mode=mode, dry_run=dry_run, speaker=speaker)
+    return logic.process(
+        text=text, mode=mode, dry_run=dry_run, speaker=speaker, preset=preset
+    )
+
+
+@MCP.tool(description="List available reply presets.")
+def list_presets() -> dict[str, Any]:
+    return {"presets": sorted(list(VV_BOX.PRESET_PROMPTS.keys()))}
 
 
 @MCP.tool(description="Get basic runtime status and configured VOICEVOX URL.")

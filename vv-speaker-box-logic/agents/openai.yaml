@@ -1,4 +1,4 @@
 interface:
   display_name: "VV Speaker Box Logic"
-  short_description: "Run WSL Gemini-to-VOICEVOX orchestration tasks"
+  short_description: "Run WSL Codex-to-VOICEVOX orchestration tasks"
   default_prompt: "Use $vv-speaker-box-logic to process text into Himari-style replies and synthesize WAV via VOICEVOX."

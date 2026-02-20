@@ -1,6 +1,6 @@
 ---
 name: vv-speaker-box-logic
-description: Build and run the WSL-side VOICEVOX box logic for Himari-style speech output. Use when implementing or operating the pipeline: input intake (CLI/HTTP), Gemini CLI reply generation, 80-160 char normalization, VOICEVOX HTTP synthesis, immediate playback without WAV persistence, single-worker execution, and basic telemetry.
+description: Build and run the WSL-side VOICEVOX box logic for Himari-style speech output. Use when implementing or operating the pipeline: input intake (CLI/HTTP), Codex CLI reply generation, 80-160 char normalization, VOICEVOX HTTP synthesis, immediate playback without WAV persistence, single-worker execution, and basic telemetry.
 ---
 
 # VV Speaker Box Logic
@@ -36,7 +36,7 @@ python3 vv-speaker-box-logic/scripts/vv_box.py api --host 127.0.0.1 --port 8080
 - `MAX_CHARS` default: `160`
 - `QUEUE_MAX` default: `10`
 - `LOCK_PATH` default: `/tmp/vv-speaker.lock`
-- `LLM_COMMAND` default: `gemini -p`
+- `LLM_COMMAND` default: `codex -p`
 - `PLAYER_COMMAND` default: auto detect (`pw-play`/`paplay`/`aplay`)
 - `STREAM_PLAYBACK` default: `true`
 - `LOG_LEVEL` default: `INFO`
@@ -44,5 +44,5 @@ python3 vv-speaker-box-logic/scripts/vv_box.py api --host 127.0.0.1 --port 8080
 ## Notes
 
 - Keep one active synthesis at a time with file lock.
-- If Gemini fails, use the in-script fallback line and continue TTS.
+- If Codex CLI fails, use the in-script fallback line and continue TTS.
 - If VOICEVOX or playback fails, return text result with `played: false` and include the error.
