@@ -11,20 +11,20 @@ Implement and operate the WSL orchestration layer that sits between user text an
 
 ## Workflow
 
-1. Read `references/himari-constitution.md` and keep prompt constraints stable.
-2. Configure environment variables for VOICEVOX URL, playback command, and limits.
-3. Run `scripts/vv_box.py` in `cli` mode for Phase1.
-4. Run `scripts/vv_box.py` in `api` mode for Phase2-style `POST /speak`.
-5. Prefer `dry_run=true` first to validate LLM/normalization before synthesis.
+1. Configure `.env` (`VOICEVOX_URL`, `SPEAKER_NAME`, `PLAYER_COMMAND`, `LLM_COMMAND`).
+2. Start API mode and check `GET /health`.
+3. Validate with `POST /speak` using `dry_run=true` first.
+4. For normal conversation, use `mode=direct` (or `mode=auto`, which is treated as `direct`).
+5. Use `mode=llm` only when Codex-generated responses are needed.
 
 ## Commands
 
 ```bash
-# Phase1: CLI
-python3 vv-speaker-box-logic/scripts/vv_box.py cli
+# CLI mode
+uv run python vv-speaker-box-logic/scripts/vv_box.py cli
 
-# Phase2: HTTP API
-python3 vv-speaker-box-logic/scripts/vv_box.py api --host 127.0.0.1 --port 8080
+# HTTP API mode
+uv run python vv-speaker-box-logic/scripts/vv_box.py api --host 127.0.0.1 --port 8080
 ```
 
 ## Environment Variables
@@ -37,12 +37,15 @@ python3 vv-speaker-box-logic/scripts/vv_box.py api --host 127.0.0.1 --port 8080
 - `QUEUE_MAX` default: `10`
 - `LOCK_PATH` default: `/tmp/vv-speaker.lock`
 - `LLM_COMMAND` default: `codex -p`
-- `PLAYER_COMMAND` default: auto detect (`pw-play`/`paplay`/`aplay`)
+- `DEFAULT_PRESET` default: `himari`
+- `PLAYER_COMMAND` default: `paplay` (`.env.example`), auto-detect fallback (`pw-play`/`paplay`/`aplay`/`ffplay`)
 - `STREAM_PLAYBACK` default: `true`
 - `LOG_LEVEL` default: `INFO`
 
 ## Notes
 
+- The project preset is effectively `himari` only; unknown preset names fall back to `himari`.
 - Keep one active synthesis at a time with file lock.
-- If Codex CLI fails, use the in-script fallback line and continue TTS.
-- If VOICEVOX or playback fails, return text result with `played: false` and include the error.
+- If `PLAYER_COMMAND` is invalid or fails, the runtime retries with auto-detected players.
+- If Codex CLI fails in `mode=llm`, the in-script fallback line is used and TTS continues.
+- On VOICEVOX or playback failure, return text result with `played: false` and include `error`.
