@@ -1,6 +1,6 @@
 # vv-speaker
 
-WSL側で `Gemini -> VOICEVOX` をつなぎ、**WAV保存せず即再生**するプロジェクトです。
+WSL側で `Codex -> VOICEVOX` をつなぎ、**WAV保存せず即再生**するプロジェクトです。
 
 ## 前提
 
@@ -24,10 +24,10 @@ VOICEVOX_URL=http://<VOICEVOX_HOST>:50021
 SPEAKER_NAME=冥鳴ひまり
 ```
 
-必要なら再生コマンドを固定:
+必要なら再生コマンドを固定（WSLなら `paplay` 推奨）:
 
 ```dotenv
-PLAYER_COMMAND=aplay -q
+PLAYER_COMMAND=paplay
 ```
 
 ## 使い方
@@ -54,13 +54,16 @@ curl -s -X POST http://127.0.0.1:8080/speak \
   -d '{"text":"今の作業はここまでで十分よ。次の一手だけ残して休みましょう。","mode":"direct","speaker":"冥鳴ひまり","dry_run":false}'
 ```
 
-`mode=llm`: Gemini CLIで返答生成して再生
+`mode=llm`: LLM CLIで返答生成して再生
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/speak \
   -H 'Content-Type: application/json' \
-  -d '{"text":"短く進め方を提案して","mode":"llm","dry_run":false}'
+  -d '{"text":"短く進め方を提案して","mode":"llm","preset":"himari","dry_run":false}'
 ```
+
+`mode=llm` は `.env` の `LLM_COMMAND`（デフォルト: `codex -p`）を使います。
+`mode=auto` はこのプロジェクトでは `direct` と同じ扱いです。
 
 レスポンス例:
 
@@ -72,14 +75,19 @@ curl -s -X POST http://127.0.0.1:8080/speak \
   "input_chars": 34,
   "output_chars": 48,
   "mode": "direct",
+  "preset": "himari",
   "latency_ms": { "total_ms": 1200, "llm_ms": 300, "tts_ms": 900 },
   "speaker_id": 14,
   "reply_source": "llm",
   "error": null
 }
+```
 
 `GET /health` は VOICEVOX到達性とデフォルト話者解決を返します。
-```
+
+プリセット:
+
+- `himari` : 冥鳴ひまり口調
 
 ### 3. CLIモード
 
@@ -104,5 +112,8 @@ uv run python vv-speaker-box-logic/scripts/stream_play_sample.py \
   - `VOICEVOX_URL` が違うか、VOICEVOX Engine が停止中です。
 - `No audio player found`
   - `pw-play`/`paplay`/`aplay` のいずれかをインストールするか、`.env` に `PLAYER_COMMAND` を設定してください。
+  - `PLAYER_COMMAND` が無効、または実行失敗でも、自動検出できる別プレイヤー（`ffplay` 含む）に順次フォールバックします。
+- 設定変更後に挙動が変わらない
+  - MCPサーバープロセスが古いコードを保持している可能性があります。Codex CLIを再起動して再接続してください。
 - `reply_source: fallback`
-  - Gemini CLIの実行に失敗しています。`LLM_COMMAND` と認証状態を確認してください。
+  - Codex CLIの実行に失敗しています。`LLM_COMMAND` と認証状態を確認してください。

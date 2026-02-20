@@ -27,13 +27,29 @@ FALLBACK_REPLY = (
     "まず優先順位を一つに絞って、短い手順から試すのが確実よ。"
 )
 
-SYSTEM_PROMPT = (
-    "あなたは冥鳴ひまりとして話す。"
-    "落ち着き・知的・少し余裕のある女性の口調で、一人称は私。"
-    "返答は80〜160文字、2〜3文、結論→理由→軽い補足の順。"
-    "箇条書きとMarkdownを禁止し、返答本文のみを出力。"
-    "情報不足でも質問返しせず、仮定して短く答える。"
-)
+PRESET_PROMPTS = {
+    "himari": (
+        "あなたは冥鳴ひまりとして話す。"
+        "落ち着き・知的・少し余裕のある女性の口調で、一人称は私。"
+        "返答は80〜160文字、2〜3文、結論→理由→軽い補足の順。"
+        "箇条書きとMarkdownを禁止し、返答本文のみを出力。"
+        "情報不足でも質問返しせず、仮定して短く答える。"
+    )
+}
+
+
+def resolve_preset_name(name: Optional[str], default_name: str = "himari") -> str:
+    if not name:
+        return default_name
+    key = str(name).strip().lower()
+    if key in PRESET_PROMPTS:
+        return key
+    return default_name
+
+
+def get_system_prompt(name: Optional[str], default_name: str = "himari") -> Tuple[str, str]:
+    preset = resolve_preset_name(name, default_name=default_name)
+    return PRESET_PROMPTS[preset], preset
 
 
 def load_dotenv() -> None:
@@ -67,6 +83,7 @@ class Config:
     llm_command: str
     player_command: str
     stream_playback: bool
+    default_preset: str
 
     @staticmethod
     def from_env() -> "Config":
@@ -83,9 +100,10 @@ class Config:
             max_chars=int(os.getenv("MAX_CHARS", "160")),
             queue_max=int(os.getenv("QUEUE_MAX", "10")),
             lock_path=Path(os.getenv("LOCK_PATH", "/tmp/vv-speaker.lock")),
-            llm_command=os.getenv("LLM_COMMAND", "gemini -p"),
+            llm_command=os.getenv("LLM_COMMAND", "codex -p"),
             player_command=os.getenv("PLAYER_COMMAND", ""),
             stream_playback=as_bool(os.getenv("STREAM_PLAYBACK", "true"), default=True),
+            default_preset=os.getenv("DEFAULT_PRESET", "himari"),
         )
 
 
@@ -193,8 +211,8 @@ def normalize_direct_text(text: str) -> Optional[str]:
     return text
 
 
-def run_llm(user_text: str, cfg: Config) -> str:
-    prompt = f"{SYSTEM_PROMPT}\n\nユーザー入力: {user_text}\n\n返答:"
+def run_llm(user_text: str, cfg: Config, system_prompt: str) -> str:
+    prompt = f"{system_prompt}\n\nユーザー入力: {user_text}\n\n返答:"
     cmd = shlex.split(cfg.llm_command) + [prompt]
     completed = subprocess.run(
         cmd,
@@ -221,15 +239,66 @@ def split_sentences(text: str) -> List[str]:
 
 
 def detect_player_command(user_command: str) -> List[str]:
+    def resolve_executable(cmd: List[str]) -> Optional[List[str]]:
+        if not cmd:
+            return None
+        executable = cmd[0]
+        if os.path.isabs(executable):
+            if os.path.isfile(executable) and os.access(executable, os.X_OK):
+                return cmd
+            return None
+        resolved = shutil.which(executable)
+        if not resolved:
+            return None
+        return [resolved] + cmd[1:]
+
     if user_command.strip():
-        return shlex.split(user_command)
-    if shutil.which("pw-play"):
-        return ["pw-play"]
-    if shutil.which("paplay"):
-        return ["paplay"]
-    if shutil.which("aplay"):
-        return ["aplay", "-q"]
+        configured = resolve_executable(shlex.split(user_command))
+        if configured is not None:
+            return configured
+        logging.getLogger("vv_box").warning(
+            "Configured PLAYER_COMMAND is unavailable: %s. Falling back to autodetect.",
+            user_command,
+        )
+    pw_play = shutil.which("pw-play")
+    if pw_play:
+        return [pw_play]
+    paplay = shutil.which("paplay")
+    if paplay:
+        return [paplay]
+    aplay = shutil.which("aplay")
+    if aplay:
+        return [aplay, "-q"]
+    ffplay = shutil.which("ffplay")
+    if ffplay:
+        return [ffplay, "-nodisp", "-autoexit", "-loglevel", "error"]
     raise RuntimeError("No audio player found. Set PLAYER_COMMAND or install pw-play/paplay/aplay.")
+
+
+def autodetected_player_commands() -> List[List[str]]:
+    commands: List[List[str]] = []
+    pw_play = shutil.which("pw-play")
+    if pw_play:
+        commands.append([pw_play])
+    paplay = shutil.which("paplay")
+    if paplay:
+        commands.append([paplay])
+    aplay = shutil.which("aplay")
+    if aplay:
+        commands.append([aplay, "-q"])
+    ffplay = shutil.which("ffplay")
+    if ffplay:
+        commands.append([ffplay, "-nodisp", "-autoexit", "-loglevel", "error"])
+    return commands
+
+
+def normalize_mode(mode: str) -> str:
+    key = (mode or "").strip().lower()
+    if key in {"", "auto", "direct"}:
+        return "direct"
+    if key == "llm":
+        return "llm"
+    return "llm"
 
 
 def play_wav_bytes(player_cmd: List[str], wav_data: bytes) -> None:
@@ -237,7 +306,22 @@ def play_wav_bytes(player_cmd: List[str], wav_data: bytes) -> None:
         fp.write(wav_data)
         temp_path = fp.name
     try:
-        subprocess.run(player_cmd + [temp_path], check=True)
+        run_env = os.environ.copy()
+        if "PULSE_SERVER" not in run_env and Path("/mnt/wslg/PulseServer").exists():
+            run_env["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
+        completed = subprocess.run(
+            player_cmd + [temp_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            env=run_env,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip()
+            stdout = (completed.stdout or "").strip()
+            detail = stderr or stdout or f"exit status {completed.returncode}"
+            raise RuntimeError(f"Audio player failed: {detail}")
     finally:
         try:
             os.unlink(temp_path)
@@ -252,6 +336,33 @@ class BoxLogic:
         self.logger = logging.getLogger("vv_box")
         self.player_cmd: Optional[List[str]] = None
         self._speaker_id_cache: Dict[str, int] = {}
+
+    def _play_wav(self, wav_data: bytes) -> None:
+        candidates: List[List[str]] = []
+        if self.player_cmd is not None:
+            candidates.append(self.player_cmd)
+        elif self.cfg.player_command.strip():
+            try:
+                candidates.append(detect_player_command(self.cfg.player_command))
+            except Exception as exc:
+                self.logger.warning("Configured player is unavailable: %s", exc)
+        for cmd in autodetected_player_commands():
+            if cmd not in candidates:
+                candidates.append(cmd)
+        if not candidates:
+            raise RuntimeError("No audio player found. Set PLAYER_COMMAND or install pw-play/paplay/aplay.")
+
+        errors: List[str] = []
+        for idx, cmd in enumerate(candidates):
+            try:
+                play_wav_bytes(cmd, wav_data)
+                if idx > 0:
+                    self.logger.warning("Switched audio player to: %s", " ".join(cmd))
+                self.player_cmd = cmd
+                return
+            except Exception as exc:
+                errors.append(f"{' '.join(cmd)} => {exc}")
+        raise RuntimeError("All audio players failed: " + " | ".join(errors))
 
     def resolve_speaker_id(self, speaker: Optional[Any]) -> int:
         if speaker is None or str(speaker).strip() == "":
@@ -291,26 +402,30 @@ class BoxLogic:
                 "error": str(exc),
             }
 
-    def _make_reply(self, text: str, mode: str) -> Tuple[str, Dict[str, int], str]:
+    def _make_reply(
+        self, text: str, mode: str, preset: Optional[str]
+    ) -> Tuple[str, Dict[str, int], str, str]:
+        mode = normalize_mode(mode)
         llm_ms = 0
+        _system_prompt, resolved_preset = get_system_prompt(preset, self.cfg.default_preset)
         source = "direct"
         if mode == "direct":
             normalized = normalize_direct_text(text)
-            return (normalized or FALLBACK_REPLY, {"llm_ms": 0}, source)
+            return (normalized or FALLBACK_REPLY, {"llm_ms": 0}, source, resolved_preset)
 
         source = "llm"
         for _ in range(2):
             started = time.perf_counter()
             try:
-                raw = run_llm(text, self.cfg)
+                raw = run_llm(text, self.cfg, _system_prompt)
             except Exception:
                 raw = FALLBACK_REPLY
             llm_ms += int((time.perf_counter() - started) * 1000)
             normalized = normalize_text(raw, self.cfg.min_chars, self.cfg.max_chars)
             if normalized:
-                return normalized, {"llm_ms": llm_ms}, source
+                return normalized, {"llm_ms": llm_ms}, source, resolved_preset
         fallback = normalize_text(FALLBACK_REPLY, self.cfg.min_chars, self.cfg.max_chars)
-        return (fallback or FALLBACK_REPLY, {"llm_ms": llm_ms}, "fallback")
+        return (fallback or FALLBACK_REPLY, {"llm_ms": llm_ms}, "fallback", resolved_preset)
 
     def process(
         self,
@@ -318,19 +433,21 @@ class BoxLogic:
         mode: str = "llm",
         dry_run: bool = False,
         speaker: Optional[Any] = None,
+        preset: Optional[str] = None,
     ) -> Dict[str, Any]:
+        normalized_mode = normalize_mode(mode)
         request_id = hashlib.md5(f"{time.time()}:{text}".encode("utf-8")).hexdigest()[:10]
         t0 = time.perf_counter()
         with ProcessLock(self.cfg.lock_path):
             speaker_id = self.resolve_speaker_id(speaker)
-            reply_text, latency, reply_source = self._make_reply(text, mode)
+            reply_text, latency, reply_source, resolved_preset = self._make_reply(
+                text, normalized_mode, preset
+            )
             tts_ms = 0
             error = None
             played = False
             if not dry_run:
                 try:
-                    if self.player_cmd is None:
-                        self.player_cmd = detect_player_command(self.cfg.player_command)
                     t1 = time.perf_counter()
                     if self.cfg.stream_playback:
                         segments = split_sentences(reply_text)
@@ -355,11 +472,11 @@ class BoxLogic:
                             wav = synth_queue.get()
                             if wav is None:
                                 break
-                            play_wav_bytes(self.player_cmd, wav)
+                            self._play_wav(wav)
                         worker.join(timeout=1)
                     else:
                         wav = self.client.synthesize(reply_text, speaker_id)
-                        play_wav_bytes(self.player_cmd, wav)
+                        self._play_wav(wav)
                     tts_ms = int((time.perf_counter() - t1) * 1000)
                     played = True
                 except Exception as exc:
@@ -377,9 +494,10 @@ class BoxLogic:
                 },
                 "speaker_id": speaker_id,
                 "reply_source": reply_source,
+                "preset": resolved_preset,
                 "input_chars": len(text),
                 "output_chars": len(reply_text),
-                "mode": mode,
+                "mode": normalized_mode,
                 "error": error,
             }
             self.logger.info(json.dumps(result, ensure_ascii=False))
@@ -410,6 +528,7 @@ class APIService:
                     mode=str(payload.get("mode", "llm")),
                     dry_run=bool(payload.get("dry_run", False)),
                     speaker=payload.get("speaker"),
+                    preset=payload.get("preset"),
                 )
             except Exception as exc:
                 task.result = {"error": str(exc)}
