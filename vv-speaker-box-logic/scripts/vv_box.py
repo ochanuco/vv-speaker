@@ -179,6 +179,17 @@ def normalize_text(text: str, min_chars: int, max_chars: int) -> Optional[str]:
     return text
 
 
+def normalize_direct_text(text: str) -> Optional[str]:
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(?:^|\s)[\-\*]\s+", " ", text).strip()
+    if not text:
+        return None
+    if not re.search(r"[。！？!?]$", text):
+        text += "。"
+    return text
+
+
 def run_llm(user_text: str, cfg: Config) -> str:
     prompt = f"{SYSTEM_PROMPT}\n\nユーザー入力: {user_text}\n\n返答:"
     cmd = shlex.split(cfg.llm_command) + [prompt]
@@ -243,7 +254,7 @@ class BoxLogic:
         llm_ms = 0
         source = "direct"
         if mode == "direct":
-            normalized = normalize_text(text, self.cfg.min_chars, self.cfg.max_chars)
+            normalized = normalize_direct_text(text)
             return (normalized or FALLBACK_REPLY, {"llm_ms": 0}, source)
 
         source = "llm"

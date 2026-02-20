@@ -1,0 +1,18 @@
+{
+  "theme": "GitHub",
+  "mcpServers": {
+    "vv-speaker": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "vv-speaker-box-logic/scripts/mcp_server.py"
+      ],
+      "cwd": ".",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "description": "VV Speaker MCP server. Prefer using it for spoken replies in this project."
+    }
+  }
+}
