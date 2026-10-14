@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ochanuco/.github/.github/workflows/uv.yml@e5102a8ff65b3c15a2afa263d4970dbbe6538862 # v1.1.0
+    with:
+      python-version: "3.12"
+      run: |
+        uv sync --locked
+        uv run python -m unittest discover -s tests
